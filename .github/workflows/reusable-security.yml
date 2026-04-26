@@ -184,7 +184,8 @@ jobs:
         run: |
           if [ ! -f trivy-fs.sarif ]; then
             echo "::warning::Trivy fs scan didn't produce SARIF — writing empty placeholder"
-            echo '{"version":"2.1.0","runs":[]}' > trivy-fs.sarif
+            # Valid SARIF for Code Scanning: must have at least one run with tool driver
+            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"trivy-placeholder"}},"results":[]}]}' > trivy-fs.sarif
           fi
       - name: Fail step if Trivy actually had findings or crashed
         if: steps.trivy-fs.outcome == 'failure'
@@ -257,7 +258,7 @@ jobs:
         run: |
           if [ ! -f trivy-image.sarif ]; then
             echo "::warning::Trivy image scan didn't produce SARIF — writing empty placeholder"
-            echo '{"version":"2.1.0","runs":[]}' > trivy-image.sarif
+            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"trivy-placeholder"}},"results":[]}]}' > trivy-image.sarif
           fi
       - name: Fail step if Trivy actually had findings or crashed
         if: steps.trivy-image.outcome == 'failure'
@@ -279,30 +280,50 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────────────
   # 4. CodeQL — language-aware
+  # Two jobs: one for the source language (JS/Python/Go), one for Actions.
+  # Splitting them avoids the matrix-level "Did not recognize language: actions"
+  # parsing quirk that surfaces when actions is mixed with source languages.
   # ──────────────────────────────────────────────────────────────────────────
-  code-analysis:
-    name: Code — CodeQL
+  code-analysis-source:
+    name: Code — CodeQL (${{ inputs.language }})
     if: inputs.language != 'none'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
       actions: read
-    strategy:
-      fail-fast: false
-      matrix:
-        language:
-          - ${{ inputs.language == 'javascript' && 'javascript-typescript' || inputs.language }}
-          - actions
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
-      - uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
         with:
-          languages: ${{ matrix.language }}
+          languages: ${{ inputs.language == 'javascript' && 'javascript-typescript' || inputs.language }}
           queries: security-and-quality
-      - uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
         with:
-          category: '/language:${{ matrix.language }}'
+          category: '/language:${{ inputs.language }}'
+
+  code-analysis-actions:
+    name: Code — CodeQL (actions)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - name: Initialize CodeQL (actions)
+        uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          languages: actions
+          # build-mode is required for the actions extractor in newer CodeQL
+          build-mode: none
+          queries: security-and-quality
+      - name: Perform CodeQL analysis (actions)
+        uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          category: '/language:actions'
 
   # ──────────────────────────────────────────────────────────────────────────
   # 5. IaC scan — only if scan-iac is true
@@ -358,7 +379,7 @@ jobs:
           if [ ! -d .github/workflows ]; then
             echo "::warning::No .github/workflows directory — skipping zizmor"
             # Write an empty SARIF so the upload step doesn't choke on missing file
-            echo '{"version":"2.1.0","runs":[]}' > zizmor.sarif
+            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"zizmor-placeholder"}},"results":[]}]}' > zizmor.sarif
             exit 0
           fi
           # Always emit a SARIF file, even if zizmor finds nothing or errors —
@@ -409,7 +430,8 @@ jobs:
       - secrets-scan
       - dependency-audit
       - container-scan
-      - code-analysis
+      - code-analysis-source
+      - code-analysis-actions
       - iac-scan
       - actions-audit
       - sbom
