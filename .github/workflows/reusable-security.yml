@@ -338,7 +338,7 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@38a95e98d734de90ac15e6427aaa971afa676a4f  # v12.2911.0
+        uses: bridgecrewio/checkov-action@99bb2caf247dfd9f03cf984373bc6043d4e32ebf  # v12.1347.0
         with:
           file: ${{ inputs.iac-files }}
           framework: cloudformation
@@ -355,6 +355,10 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────────────
   # 6. Actions audit — zizmor
+  # Uses the official zizmor-action which handles install, run, SARIF emission,
+  # and upload to Code Scanning in one step. Much more reliable than my
+  # previous pipx install + manual SARIF wrangling.
+  # See: https://docs.zizmor.sh/integrations/
   # ──────────────────────────────────────────────────────────────────────────
   actions-audit:
     name: Actions — zizmor
@@ -362,42 +366,19 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      actions: read           # zizmor-action needs this on private repos
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
-      - name: Install zizmor
-        run: |
-          set -euo pipefail
-          # Install via pipx — zizmor is published to PyPI and stays current,
-          # whereas hardcoded GitHub release URLs break when the project
-          # reorganizes releases. pipx isolates the install and is preinstalled
-          # on ubuntu-latest runners.
-          pipx install zizmor
-          zizmor --version
-      - name: Run zizmor
-        run: |
-          set -euo pipefail
-          if [ ! -d .github/workflows ]; then
-            echo "::warning::No .github/workflows directory — skipping zizmor"
-            # Write an empty SARIF so the upload step doesn't choke on missing file
-            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"zizmor-placeholder"}},"results":[]}]}' > zizmor.sarif
-            exit 0
-          fi
-          # Always emit a SARIF file, even if zizmor finds nothing or errors —
-          # the upload step is `if: always()` and needs the file to exist.
-          if zizmor --format sarif .github/workflows/ > zizmor.sarif; then
-            ZIZMOR_EXIT=0
-          else
-            ZIZMOR_EXIT=$?
-          fi
-          # Show human summary for the PR check log
-          zizmor .github/workflows/ || true
-          exit $ZIZMOR_EXIT
-      - name: Upload zizmor SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
+      - name: Checkout repository
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
         with:
-          sarif_file: zizmor.sarif
-          category: zizmor
+          persist-credentials: false
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@b1d7e1fb5de872772f31590499237e7cce841e8e  # v0.5.3
+        with:
+          # advanced-security: true is the default and uploads SARIF to Code
+          # Scanning — works on public repos and private repos with GHAS.
+          # If neither applies, set advanced-security: false here.
+          advanced-security: true
 
   # ──────────────────────────────────────────────────────────────────────────
   # 7. SBOM
