@@ -1,0 +1,371 @@
+# .github/workflows/reusable-security.yml
+#
+# AgentOS — Reusable security pipeline.
+#
+# This workflow is intended to live in `Arun-Cloudsec/.github` and be called
+# by per-agent wrapper workflows in every agent repo. One canonical version,
+# many consumers. To upgrade scanners, action SHAs, or skip rules, change
+# this file once — every agent repo inherits the change on its next run.
+#
+# Consumer wrapper (in `Arun-Cloudsec/<agent-repo>/.github/workflows/security.yml`):
+#
+#   name: Security CI
+#   on:
+#     pull_request: { branches: [main] }
+#     push:         { branches: [main] }
+#     schedule:     [{ cron: '0 2 * * *' }]
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#     security-events: write
+#     actions: read
+#   jobs:
+#     security:
+#       uses: Arun-Cloudsec/.github/.github/workflows/reusable-security.yml@main
+#       with:
+#         language: javascript      # or python, go — controls which scanners run
+#         scan-container: true      # set false for repos without a Dockerfile
+#       secrets: inherit
+#
+# Note the path: GitHub requires the format `<owner>/<repo>/.github/workflows/<file>@<ref>`.
+# The `.github/workflows/` is literal — yes, doubled — because the repo IS named
+# `.github` and the workflow lives at `.github/workflows/` inside it.
+
+name: Reusable Security CI
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: 'Primary language: javascript, python, go, or none (skip code analysis)'
+        type: string
+        default: 'javascript'
+      scan-container:
+        description: 'Whether to build and scan a container image (requires Dockerfile)'
+        type: boolean
+        default: true
+      scan-iac:
+        description: 'Whether to scan IaC files (CloudFormation, Bicep, Terraform)'
+        type: boolean
+        default: false
+      iac-files:
+        description: 'Comma-separated list of IaC files to scan (CloudFormation only for now)'
+        type: string
+        default: ''
+      severity-threshold:
+        description: 'Fail on this severity or higher (CRITICAL, HIGH, MEDIUM)'
+        type: string
+        default: 'HIGH'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reusable-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. Secrets scanning — Gitleaks
+  # ──────────────────────────────────────────────────────────────────────────
+  secrets-scan:
+    name: Secrets — Gitleaks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2.3.7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. Dependency audit — language-aware
+  # JavaScript: npm audit + Trivy fs
+  # Python:     pip-audit + Trivy fs
+  # Go:         govulncheck + Trivy fs
+  # none:       Trivy fs only
+  # ──────────────────────────────────────────────────────────────────────────
+  dependency-audit:
+    name: Dependencies — ${{ inputs.language }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+
+      # JavaScript path
+      - name: Setup Node
+        if: inputs.language == 'javascript'
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: npm audit
+        if: inputs.language == 'javascript'
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --ignore-scripts
+            # Map our threshold to npm audit levels
+            case "${{ inputs.severity-threshold }}" in
+              CRITICAL) LEVEL=critical ;;
+              HIGH)     LEVEL=high ;;
+              *)        LEVEL=moderate ;;
+            esac
+            npm audit --audit-level="$LEVEL"
+          else
+            echo "::warning::No package-lock.json found — skipping npm audit"
+          fi
+
+      # Python path
+      - name: Setup Python
+        if: inputs.language == 'python'
+        uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: '3.12'
+      - name: pip-audit
+        if: inputs.language == 'python'
+        run: |
+          set -euo pipefail
+          pip install --quiet pip-audit
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt --strict
+          elif [ -f pyproject.toml ]; then
+            pip-audit --strict
+          else
+            echo "::warning::No requirements.txt or pyproject.toml — skipping pip-audit"
+          fi
+
+      # Go path
+      - name: Setup Go
+        if: inputs.language == 'go'
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32  # v5.0.2
+        with:
+          go-version: '1.22'
+      - name: govulncheck
+        if: inputs.language == 'go'
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      # All languages: Trivy filesystem scan
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.24.0
+        with:
+          scan-type: fs
+          scan-ref: '.'
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+        env:
+          TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. Container image scan — only if scan-container is true
+  # ──────────────────────────────────────────────────────────────────────────
+  container-scan:
+    name: Container — Trivy image
+    if: inputs.scan-container
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+
+      - name: Check for Dockerfile
+        run: |
+          if [ ! -f Dockerfile ]; then
+            echo "::error::scan-container=true but no Dockerfile found in repo root"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db  # v3.6.1
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85  # v6.7.0
+        with:
+          context: .
+          push: false
+          tags: agentos-scan:latest
+          load: true
+          provenance: false
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.24.0
+        with:
+          image-ref: agentos-scan:latest
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+        env:
+          TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db
+
+      - name: Upload Trivy image SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. CodeQL — language-aware
+  # ──────────────────────────────────────────────────────────────────────────
+  code-analysis:
+    name: Code — CodeQL
+    if: inputs.language != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - ${{ inputs.language == 'javascript' && 'javascript-typescript' || inputs.language }}
+          - actions
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          category: '/language:${{ matrix.language }}'
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. IaC scan — only if scan-iac is true
+  # ──────────────────────────────────────────────────────────────────────────
+  iac-scan:
+    name: IaC — Checkov
+    if: inputs.scan-iac && inputs.iac-files != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@38a95e98d734de90ac15e6427aaa971afa676a4f  # v12.2911.0
+        with:
+          file: ${{ inputs.iac-files }}
+          framework: cloudformation
+          output_format: sarif
+          output_file_path: checkov.sarif
+          skip_check: 'CKV_AWS_8,CKV_AWS_157,CKV_AWS_117'
+          soft_fail: false
+      - name: Upload Checkov SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          sarif_file: checkov.sarif/results_sarif.sarif
+          category: checkov
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 6. Actions audit — zizmor
+  # ──────────────────────────────────────────────────────────────────────────
+  actions-audit:
+    name: Actions — zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - name: Install zizmor
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/woodruffw/zizmor/releases/download/v0.6.0/zizmor-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz
+          sudo mv zizmor /usr/local/bin/
+      - name: Run zizmor
+        run: |
+          set -euo pipefail
+          if [ ! -d .github/workflows ]; then
+            echo "::warning::No .github/workflows directory — skipping zizmor"
+            exit 0
+          fi
+          zizmor --format sarif .github/workflows/ > zizmor.sarif || ZIZMOR_EXIT=$?
+          ZIZMOR_EXIT=${ZIZMOR_EXIT:-0}
+          zizmor .github/workflows/ || true
+          exit $ZIZMOR_EXIT
+      - name: Upload zizmor SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 7. SBOM
+  # ──────────────────────────────────────────────────────────────────────────
+  sbom:
+    name: SBOM — Syft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - uses: anchore/sbom-action@e8d2a6937ecead383dfe75190d104edd1f9c5751  # v0.16.1
+        with:
+          path: '.'
+          format: spdx-json
+          artifact-name: ${{ github.event.repository.name }}-sbom.spdx.json
+          output-file: sbom.spdx.json
+      - uses: anchore/sbom-action@e8d2a6937ecead383dfe75190d104edd1f9c5751  # v0.16.1
+        with:
+          path: '.'
+          format: cyclonedx-json
+          artifact-name: ${{ github.event.repository.name }}-sbom.cdx.json
+          output-file: sbom.cdx.json
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Gate — single status check for branch protection
+  # ──────────────────────────────────────────────────────────────────────────
+  security-gate:
+    name: Security gate
+    runs-on: ubuntu-latest
+    needs:
+      - secrets-scan
+      - dependency-audit
+      - container-scan
+      - code-analysis
+      - iac-scan
+      - actions-audit
+      - sbom
+    if: always()
+    steps:
+      - name: Verify all required jobs passed
+        env:
+          RESULTS: ${{ toJson(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$RESULTS" | jq -r 'to_entries | .[] | "\(.key): \(.value.result)"'
+          FAILED=$(echo "$RESULTS" | jq -r 'to_entries | .[] | select(.value.result == "failure" or .value.result == "cancelled") | .key')
+          if [ -n "$FAILED" ]; then
+            echo "::error::Security gate failed. Failed jobs:"
+            echo "$FAILED"
+            exit 1
+          fi
+          echo "All security scans passed."
