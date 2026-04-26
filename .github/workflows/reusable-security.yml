@@ -279,10 +279,12 @@ jobs:
           category: trivy-image
 
   # ──────────────────────────────────────────────────────────────────────────
-  # 4. CodeQL — language-aware
-  # Two jobs: one for the source language (JS/Python/Go), one for Actions.
-  # Splitting them avoids the matrix-level "Did not recognize language: actions"
-  # parsing quirk that surfaces when actions is mixed with source languages.
+  # 4. CodeQL — source-language analysis (JS/Python/Go).
+  #
+  # GitHub Actions security analysis is handled separately by zizmor (job 6),
+  # which provides more complete Actions coverage than CodeQL's actions
+  # extractor and doesn't suffer from the SHA-pin language-recognition bug
+  # tracked at github/codeql-action#2923.
   # ──────────────────────────────────────────────────────────────────────────
   code-analysis-source:
     name: Code — CodeQL (${{ inputs.language }})
@@ -303,27 +305,6 @@ jobs:
         uses: github/codeql-action/analyze@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           category: '/language:${{ inputs.language }}'
-
-  code-analysis-actions:
-    name: Code — CodeQL (actions)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
-    steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
-      - name: Initialize CodeQL (actions)
-        uses: github/codeql-action/init@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
-        with:
-          languages: actions
-          # build-mode is required for the actions extractor in newer CodeQL
-          build-mode: none
-          queries: security-and-quality
-      - name: Perform CodeQL analysis (actions)
-        uses: github/codeql-action/analyze@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
-        with:
-          category: '/language:actions'
 
   # ──────────────────────────────────────────────────────────────────────────
   # 5. IaC scan — only if scan-iac is true
@@ -412,7 +393,6 @@ jobs:
       - dependency-audit
       - container-scan
       - code-analysis-source
-      - code-analysis-actions
       - iac-scan
       - actions-audit
       - sbom
