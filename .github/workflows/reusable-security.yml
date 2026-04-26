@@ -202,7 +202,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/upload-sarif@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
@@ -273,7 +273,7 @@ jobs:
 
       - name: Upload Trivy image SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/upload-sarif@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
@@ -295,12 +295,12 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/init@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           languages: ${{ inputs.language == 'javascript' && 'javascript-typescript' || inputs.language }}
           queries: security-and-quality
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/analyze@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           category: '/language:${{ inputs.language }}'
 
@@ -314,14 +314,14 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - name: Initialize CodeQL (actions)
-        uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/init@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           languages: actions
           # build-mode is required for the actions extractor in newer CodeQL
           build-mode: none
           queries: security-and-quality
       - name: Perform CodeQL analysis (actions)
-        uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/analyze@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           category: '/language:actions'
 
@@ -348,7 +348,7 @@ jobs:
           soft_fail: false
       - name: Upload Checkov SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/upload-sarif@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           sarif_file: checkov.sarif/results_sarif.sarif
           category: checkov
@@ -394,7 +394,7 @@ jobs:
           exit $ZIZMOR_EXIT
       - name: Upload zizmor SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93  # v3.26.6
+        uses: github/codeql-action/upload-sarif@f779452ac5af1c261dce0346a8f964149f49322b  # v3.27.0
         with:
           sarif_file: zizmor.sarif
           category: zizmor
